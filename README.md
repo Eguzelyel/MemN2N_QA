@@ -1,6 +1,6 @@
 ## End-to-End Memory Networks on bAbI Dataset 
 
-Full report and Figures: [*MemN2N_QA*](Full%20Report.pdf)
+Full report and Figures: [*MemN2N_QA*](Final%20Report.pdf)
 
 ### Abstract
 Attention has gained a lot of popularity due to its performance on text and image data. It is able to extract only the words or pixels that are related to the task. Applying this idea to memory has a great potential and variable use cases. In this report we will inquire how the original author of the paper "End-to-End Memory Networks" (Sukhbaatar, et al.) implemented memory; and we will mention different approaches for the model. We will explain the dataset we used for the tasks; then we will compare how our results stand out against the paper's result.
