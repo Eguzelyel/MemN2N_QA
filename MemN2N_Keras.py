@@ -1,36 +1,30 @@
+"""
+Ekrem Guzelyel: A20384767
+Hasan Rizvi: A20374805
+"""
 
-'''
-In order to run the code, on shell, just simply do 
-$python MemN2N_Keras.py
-For convenience, the .ipynb version is added too.
+import numpy as np
 
-# Train a memory network on the bAbI dataset.
-References:
-- https://github.com/keras-team/keras/blob/master/examples/babi_memnn.py
-- Jason Weston, Antoine Bordes, Sumit Chopra, Tomas Mikolov, Alexander M. Rush,
-  ["Towards AI-Complete Question Answering:
-  A Set of Prerequisite Toy Tasks"](http://arxiv.org/abs/1502.05698)
-- Sainbayar Sukhbaatar, Arthur Szlam, Jason Weston, Rob Fergus,
-  ["End-To-End Memory Networks"](http://arxiv.org/abs/1503.08895)
-Reaches 94.3% accuracy on task 'single_supporting_fact_10k' after 120 epochs.
-Time per epoch: 4s on CPU (core i7).
+from keras.models import Model
+from keras.layers import Dense, Embedding, Input, Dropout, Lambda, Flatten
+from keras.layers import Dot, Activation, Softmax, Add, Multiply, Permute
+from keras.layers import dot, add, multiply
 
-The components like tokenizer and parser are 
-'''
-from __future__ import print_function
+from keras.engine.topology import Layer
 
-from keras.models import Sequential, Model
-from keras.layers.embeddings import Embedding
-from keras.layers import Input, Activation, Dense, Permute, Dropout
-from keras.layers import add, dot, concatenate
-from keras.layers import LSTM
 from keras.utils.data_utils import get_file
 from keras.preprocessing.sequence import pad_sequences
-from functools import reduce
+
+# from src.util import *
+
+from keras.backend import variable, transpose, reshape, gather
+from keras import backend as K
+
+
 import tarfile
+from functools import reduce
 import numpy as np
 import re
-
 
 def tokenize(sent):
     '''Return the tokens of a sentence including punctuation.
@@ -85,7 +79,7 @@ def get_stories(f, only_supporting=False, max_length=None):
     return data
 
 
-def vectorize_stories(data):
+def vectorize_stories(data, word_idx, story_maxlen, query_maxlen):
     inputs, queries, answers = [], [], []
     for story, query, answer in data:
         inputs.append([word_idx[w] for w in story])
@@ -94,6 +88,9 @@ def vectorize_stories(data):
     return (pad_sequences(inputs, maxlen=story_maxlen),
             pad_sequences(queries, maxlen=query_maxlen),
             np.array(answers))
+
+# from google.colab import files
+# files.upload()
 
 try:
     path = get_file('babi-tasks-v1-2.tar.gz',
@@ -109,168 +106,328 @@ except:
 
 challenges = {
     # QA1 with 10,000 samples
-    'single_supporting_fact_10k': 'tasks_1-20_v1-2/en-10k/qa1_'
-                                  'single-supporting-fact_{}.txt',
-    # QA2 with 10,000 samples
-    'two_supporting_facts_10k': 'tasks_1-20_v1-2/en-10k/qa2_'
-                                'two-supporting-facts_{}.txt',
+    'qa1': 'tasks_1-20_v1-2/en-10k/qa1_single-supporting-fact_{}.txt',
+    'qa2': 'tasks_1-20_v1-2/en-10k/qa2_two-supporting-facts_{}.txt',
+    'qa3': 'tasks_1-20_v1-2/en-10k/qa3_three-supporting-facts_{}.txt',
+    'qa4': 'tasks_1-20_v1-2/en-10k/qa4_two-arg-relations_{}.txt',
+    'qa5': 'tasks_1-20_v1-2/en-10k/qa5_three-arg-relations_{}.txt',
+    'qa6': 'tasks_1-20_v1-2/en-10k/qa6_yes-no-questions_{}.txt',
+    'qa7': 'tasks_1-20_v1-2/en-10k/qa7_counting_{}.txt',
+    'qa8': 'tasks_1-20_v1-2/en-10k/qa8_lists-sets_{}.txt',
+    'qa9': 'tasks_1-20_v1-2/en-10k/qa9_simple-negation_{}.txt',
+    'qa10': 'tasks_1-20_v1-2/en-10k/qa10_indefinite-knowledge_{}.txt',
+    'qa11': 'tasks_1-20_v1-2/en-10k/qa11_basic-coreference_{}.txt',
+    'qa12': 'tasks_1-20_v1-2/en-10k/qa12_conjunction_{}.txt',
+    'qa13': 'tasks_1-20_v1-2/en-10k/qa13_compound-coreference_{}.txt',
+    'qa14': 'tasks_1-20_v1-2/en-10k/qa14_time-reasoning_{}.txt',
+    'qa15': 'tasks_1-20_v1-2/en-10k/qa15_basic-deduction_{}.txt',
+    'qa16': 'tasks_1-20_v1-2/en-10k/qa16_basic-induction_{}.txt',
+    'qa17': 'tasks_1-20_v1-2/en-10k/qa17_positional-reasoning_{}.txt',
+    'qa18': 'tasks_1-20_v1-2/en-10k/qa18_size-reasoning_{}.txt',
+    'qa19': 'tasks_1-20_v1-2/en-10k/qa19_path-finding_{}.txt',
+    'qa20': 'tasks_1-20_v1-2/en-10k/qa20_agents-motivations_{}.txt',
 }
-challenge_type = 'two_supporting_facts_10k'
-challenge = challenges[challenge_type]
 
-print('Extracting stories for the challenge:', challenge_type)
-with tarfile.open(path) as tar:
-    train_stories = get_stories(tar.extractfile(challenge.format('train')))
-    test_stories = get_stories(tar.extractfile(challenge.format('test')))
+challenge_type = 'qa{}'
 
-vocab = set()
-for story, q, answer in train_stories + test_stories:
-    vocab |= set(story + q + [answer])
-vocab = sorted(vocab)
+class MemN2NBlock(Layer): 
+    def __init__(self, output_dim):
+        super(MemN2NBlock, self).__init__()
+        
+        self.output_dim = output_dim
+        
+        # layer operations
+        self.input_memory = Dot(axes=(-1))
+        self.input_representation = Softmax()
+        self.permute_weights = Permute((2,1))
+        self.output_memory = Dot(axes=(2,1))
+        self.h_mapping = self.add_weight(
+                name='H',
+                shape=(self.output_dim[2],output_dim[2]),
+                initializer='glorot_normal',
+                trainable=True
+        )
+        self.new_u = Add()
+        
+    def call(self, inputs):
+        m = self.input_memory([inputs[0], inputs[1]])
+        p = self.input_representation(m)
+        # print('p.shape: ', p.shape)
+        # p = self.permute_weights(p) 
+        p = reshape(p, [-1, p.shape[2], p.shape[1]])
+        # print('p.shape: ', p.shape)
+        c = self.output_memory([p, inputs[2]])
+        
+        mapped_u = K.dot(inputs[1], self.h_mapping)
+        
+        return self.new_u([c, mapped_u])
+        
+    def build(self, input_shape):
+        super(MemN2NBlock, self).build(input_shape)
+        
+    def compute_output_shape(self, input_shape):
+        return self.output_dim
 
-# Reserve 0 for masking via pad_sequences
-vocab_size = len(vocab) + 1
-story_maxlen = max(map(len, (x for x, _, _ in train_stories + test_stories)))
-query_maxlen = max(map(len, (x for _, x, _ in train_stories + test_stories)))
+def build_model(story_maxlen, query_maxlen, vocab_size):
+    print('MEM N2N model')
 
-print('-')
-print('Vocab size:', vocab_size, 'unique words')
-print('Story max length:', story_maxlen, 'words')
-print('Query max length:', query_maxlen, 'words')
-print('Number of training stories:', len(train_stories))
-print('Number of test stories:', len(test_stories))
-print('-')
-print('Here\'s what a "story" tuple looks like (input, query, answer):')
-print(train_stories[0])
-print('-')
-print('Vectorizing the word sequences...')
+    HOPS = 3
 
-word_idx = dict((c, i + 1) for i, c in enumerate(vocab))
-inputs_train, queries_train, answers_train = vectorize_stories(train_stories)
-inputs_test, queries_test, answers_test = vectorize_stories(test_stories)
+    sentences = Input((story_maxlen,))
+    question = Input((query_maxlen,))
 
-print('-')
-print('inputs: integer tensor of shape (samples, max_length)')
-print('inputs_train shape:', inputs_train.shape)
-print('inputs_test shape:', inputs_test.shape)
-print('-')
-print('queries: integer tensor of shape (samples, max_length)')
-print('queries_train shape:', queries_train.shape)
-print('queries_test shape:', queries_test.shape)
-print('-')
-print('answers: binary (1 or 0) tensor of shape (samples, vocab_size)')
-print('answers_train shape:', answers_train.shape)
-print('answers_test shape:', answers_test.shape)
-print('-')
-print('Compiling...')
+    A = Embedding(vocab_size, 64, na)(sentences)
+    B = Embedding(vocab_size, 64)(question)
+    C = Embedding(vocab_size, 64)(sentences)
 
-# placeholders
-input_sequence = Input((story_maxlen,))
-question = Input((query_maxlen,))
+    u = B
+    u_shape = tuple(map(lambda x: x.value, u.shape))
 
+    for i in range(HOPS):
+        u = MemN2NBlock(output_dim=u_shape)([A, u, C])
 
+    # u = Lambda(lambda x: K.sum(x, axis=1))(u) 
+    u = Flatten()(u)
 
-# encoders
-# embed the input sequence into a sequence of vectors
-input_encoder_m = Sequential()
-input_encoder_m.add(Embedding(input_dim=vocab_size,
-                              output_dim=64))
-input_encoder_m.add(Dropout(0.3))
-# output: (samples, story_maxlen, embedding_dim)
+    result = Dense(vocab_size, activation='softmax', use_bias=False)(u)
 
-# embed the input into a sequence of vectors of size query_maxlen
-input_encoder_c = Sequential()
-input_encoder_c.add(Embedding(input_dim=vocab_size,
-                              output_dim=query_maxlen))
-input_encoder_c.add(Dropout(0.3))
-# output: (samples, story_maxlen, query_maxlen)
-
-# embed the question into a sequence of vectors
-question_encoder = Sequential()
-question_encoder.add(Embedding(input_dim=vocab_size,
-                               output_dim=64, 
-                               input_length=query_maxlen))
-question_encoder.add(Dropout(0.3))
-# output: (samples, query_maxlen, embedding_dim)
+    print(result.shape)
 
 
-# encode input sequence and questions (which are indices)
-# to sequences of dense vectors
-input_encoded_m = input_encoder_m(input_sequence) # Meaning that "inputs = input_sequence"
-input_encoded_c = input_encoder_c(input_sequence)
-question_encoded = question_encoder(question)
-
-num_hops=3
-for i in range(num_hops):
-    print(i)
+    MemN2Nmodel = Model(inputs=[sentences, question], outputs=result)
+    MemN2Nmodel.compile(optimizer='rmsprop', loss='sparse_categorical_crossentropy',
+                  metrics=['accuracy'])
     
-    #DEBUG
-    print("input_sequence", input_sequence.get_shape())
-    print("question", question.get_shape())
-    print("input_encoded_m", input_encoded_m.get_shape())
-    print("input_encoded_c", input_encoded_c.get_shape())
-    print("question_encoded", question_encoded.get_shape())
-    
-    
-    # compute a 'match' between the first input vector sequence
-    # and the question vector sequence
-    # shape: `(samples, story_maxlen, query_maxlen)`
-    match = dot([input_encoded_m, question_encoded], axes=2)
-    print("match", match.get_shape())    
-    match = Activation('softmax')(match)
-    
-    # add the match matrix with the second input vector sequence
-    response = dot([match, input_encoded_c], axes=1)  
-    # shape: (samples, story_maxlen, query_maxlen)
-    print("response", response.get_shape())
-    
-    
-    question_encoded = add([response, question_encoded])
-print(question_encoded.get_shape())
+    return MemN2Nmodel
 
+# Tasks 1 to 5
 
-# the original paper uses a matrix multiplication for this reduction step.
-final_ans = LSTM(32)(question_encoded)
-final_ans = Dropout(0.3)(final_ans)
-print(final_ans.get_shape())
-final_ans = Dense(vocab_size)(final_ans)  # (samples, vocab_size)
+histories = []
+for i in range(1, 6):
+    challenge = challenges[challenge_type.format(i)]
+  
+    print('Extracting stories for the challenge:', challenge_type.format(i))
+    print(challenge.format(''))
+  
+    with tarfile.open(path) as tar:
+        train_stories = get_stories(tar.extractfile(challenge.format('train')))
+        test_stories = get_stories(tar.extractfile(challenge.format('test')))
 
+    # Building vocabulary
+    vocab = set()
+    for story, q, answer in train_stories + test_stories:
+        vocab |= set(story + q + [answer])
+    vocab = sorted(vocab)
 
-    
-# we output a probability distribution over the vocabulary
-final_ans = Activation('softmax')(final_ans)
+    # Reserve 0 for masking via pad_sequences
+    vocab_size = len(vocab) + 1
+    story_maxlen = max(map(len, (x for x, _, _ in train_stories + test_stories)))
+    query_maxlen = max(map(len, (x for _, x, _ in train_stories + test_stories)))
 
-# build the final model
-model = Model([input_sequence, question], final_ans)
-model.compile(optimizer='rmsprop', loss='sparse_categorical_crossentropy',
-              metrics=['accuracy'])
+    word_idx = dict((c, i + 1) for i, c in enumerate(vocab))
+    inputs_train, queries_train, answers_train = vectorize_stories(train_stories, word_idx, story_maxlen, query_maxlen)
+    inputs_test, queries_test, answers_test = vectorize_stories(test_stories, word_idx, story_maxlen, query_maxlen)
 
-# train
-model.fit([inputs_train, queries_train], answers_train,
+    model = build_model(story_maxlen, query_maxlen, vocab_size)
+
+    history = model.fit([inputs_train, queries_train], answers_train,
           batch_size=32,
-          epochs=120,
+          epochs=150,
           validation_data=([inputs_test, queries_test], answers_test))
 
-model.evaluate(test_stories, )
-# In[26]:
+    histories.append(history)
 
-model.history.history.keys()
+# Tasks 6 to 10
+
+for i in range(6, 11):
+    challenge = challenges[challenge_type.format(i)]
+  
+    print('Extracting stories for the challenge:', challenge_type.format(i))
+    print(challenge.format(''))
+  
+    with tarfile.open(path) as tar:
+        train_stories = get_stories(tar.extractfile(challenge.format('train')))
+        test_stories = get_stories(tar.extractfile(challenge.format('test')))
+
+    # Building vocabulary
+    vocab = set()
+    for story, q, answer in train_stories + test_stories:
+        vocab |= set(story + q + [answer])
+    vocab = sorted(vocab)
+
+    # Reserve 0 for masking via pad_sequences
+    vocab_size = len(vocab) + 1
+    story_maxlen = max(map(len, (x for x, _, _ in train_stories + test_stories)))
+    query_maxlen = max(map(len, (x for _, x, _ in train_stories + test_stories)))
+
+    word_idx = dict((c, i + 1) for i, c in enumerate(vocab))
+    inputs_train, queries_train, answers_train = vectorize_stories(train_stories, word_idx, story_maxlen, query_maxlen)
+    inputs_test, queries_test, answers_test = vectorize_stories(test_stories, word_idx, story_maxlen, query_maxlen)
+
+    model = build_model(story_maxlen, query_maxlen, vocab_size)
+
+    history = model.fit([inputs_train, queries_train], answers_train,
+          batch_size=32,
+          epochs=150,
+          validation_data=([inputs_test, queries_test], answers_test))
+
+    histories.append(history)
+
+# Tasks 11 to 15
+
+for i in range(11, 16):
+    challenge = challenges[challenge_type.format(i)]
+  
+    print('Extracting stories for the challenge:', challenge_type.format(i))
+    print(challenge.format(''))
+  
+    with tarfile.open(path) as tar:
+        train_stories = get_stories(tar.extractfile(challenge.format('train')))
+        test_stories = get_stories(tar.extractfile(challenge.format('test')))
+
+    # Building vocabulary
+    vocab = set()
+    for story, q, answer in train_stories + test_stories:
+        vocab |= set(story + q + [answer])
+    vocab = sorted(vocab)
+
+    # Reserve 0 for masking via pad_sequences
+    vocab_size = len(vocab) + 1
+    story_maxlen = max(map(len, (x for x, _, _ in train_stories + test_stories)))
+    query_maxlen = max(map(len, (x for _, x, _ in train_stories + test_stories)))
+
+    word_idx = dict((c, i + 1) for i, c in enumerate(vocab))
+    inputs_train, queries_train, answers_train = vectorize_stories(train_stories, word_idx, story_maxlen, query_maxlen)
+    inputs_test, queries_test, answers_test = vectorize_stories(test_stories, word_idx, story_maxlen, query_maxlen)
+
+    model = build_model(story_maxlen, query_maxlen, vocab_size)
+
+    history = model.fit([inputs_train, queries_train], answers_train,
+          batch_size=32,
+          epochs=150,
+          validation_data=([inputs_test, queries_test], answers_test))
+
+    histories.append(history)
+
+# Tasks 16 to 20
+
+for i in range(16, 21):
+    challenge = challenges[challenge_type.format(i)]
+  
+    print('Extracting stories for the challenge:', challenge_type.format(i))
+    print(challenge.format(''))
+  
+    with tarfile.open(path) as tar:
+        train_stories = get_stories(tar.extractfile(challenge.format('train')))
+        test_stories = get_stories(tar.extractfile(challenge.format('test')))
+
+    # Building vocabulary
+    vocab = set()
+    for story, q, answer in train_stories + test_stories:
+        vocab |= set(story + q + [answer])
+    vocab = sorted(vocab)
+
+    # Reserve 0 for masking via pad_sequences
+    vocab_size = len(vocab) + 1
+    story_maxlen = max(map(len, (x for x, _, _ in train_stories + test_stories)))
+    query_maxlen = max(map(len, (x for _, x, _ in train_stories + test_stories)))
+
+    word_idx = dict((c, i + 1) for i, c in enumerate(vocab))
+    inputs_train, queries_train, answers_train = vectorize_stories(train_stories, word_idx, story_maxlen, query_maxlen)
+    inputs_test, queries_test, answers_test = vectorize_stories(test_stories, word_idx, story_maxlen, query_maxlen)
+
+    model = build_model(story_maxlen, query_maxlen, vocab_size)
+
+    history = model.fit([inputs_train, queries_train], answers_train,
+          batch_size=32,
+          epochs=150,
+          validation_data=([inputs_test, queries_test], answers_test))
+
+    histories.append(history)
 
 
-# In[27]:
 
 import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(5, 4, sharex='col', sharey='row')
+fig.suptitle('Accuracies')
+count = 0
+fig.set_figheight(20)
+fig.set_figwidth(20)
+
+for i in range(5):
+    for j in range(4):
+    
+        cur_ax = ax[i, j]
+
+        cur_ax.set_ylim([0, 1])
+
+        cur_ax.figsize = (10,10)
+        cur_ax.plot(histories[count].history['acc'][:40])
+        cur_ax.plot(histories[count].history['val_acc'][:40])
+        cur_ax.set_title('Task {}'.format(count + 1))
+        cur_ax.legend(['train', 'test'], loc='upper left')
+        count += 1
+
+fig.savefig('accuracies.png')
+
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(5, 4, sharex='col', sharey='none')
+fig.suptitle('Losses')
+count = 0
+fig.set_figheight(20)
+fig.set_figwidth(20)
+
+for i in range(5):
+    for j in range(4):
+
+        cur_ax = ax[i, j]
+
+        cur_ax.figsize = (10,10)
+        cur_ax.plot(histories[count].history['loss'][:40])
+        cur_ax.plot(histories[count].history['val_loss'][:40])
+        cur_ax.set_title('Task {}'.format(count + 1))
+        cur_ax.legend(['train', 'test'], loc='upper left')
+        count += 1
+
+fig.savefig('losses.png')
+
+from google.colab import files
+files.download('accuracies.png')
+files.download('losses.png')
+
+histories[9].history.keys()
+
+from IPython.display import SVG
+from keras.utils.vis_utils import model_to_dot
+SVG(model_to_dot(MemN2Nmodel).create(prog='dot', format='svg'))
+
+model = MemN2Nmodel
+import matplotlib.pyplot as plt
 # summarize history for accuracy
-plt.plot(model.history.history['acc'])
-plt.plot(model.history.history['val_acc'])
+plt.plot(model.history.history['acc'][:200])
+plt.plot(model.history.history['val_acc'][:200])
 plt.title('model accuracy')
 plt.ylabel('accuracy')
 plt.xlabel('epoch')
 plt.legend(['train', 'test'], loc='upper left')
 plt.show()
 
+model = MemN2Nmodel
+import matplotlib.pyplot as plt
+# summarize history for accuracy
+plt.plot(model.history.history['loss'][:200])
+plt.plot(model.history.history['val_loss'][:200])
+plt.title('model loss')
+plt.ylabel('loss')
+plt.xlabel('epoch')
+plt.legend(['train', 'test'], loc='upper left')
+plt.show()
 
-# In[28]:
-
-model.save("lstm32hops3.model")
+import tensorflow as tf
+device_name = tf.test.gpu_device_name()
+if device_name != '/device:GPU:0':
+  raise SystemError('GPU device not found')
+print('Found GPU at: {}'.format(device_name))
 
