@@ -1,6 +1,6 @@
 ## End-to-End Memory Networks on bAbI Dataset 
 
-Full report and Figures: [*MemN2N_QA*](Full\ Report.pdf)
+Full report and Figures: [*MemN2N_QA*](Full%20Report.pdf)
 
 ### Abstract
 Attention has gained a lot of popularity due to its performance on text and image data. It is able to extract only the words or pixels that are related to the task. Applying this idea to memory has a great potential and variable use cases. In this report we will inquire how the original author of the paper "End-to-End Memory Networks" (Sukhbaatar, et al.) implemented memory; and we will mention different approaches for the model. We will explain the dataset we used for the tasks; then we will compare how our results stand out against the paper's result.
@@ -19,13 +19,18 @@ Finally, the paper also comments on how the models behave when they use all the 
 
 ### Authors
 Syed Muhammed Hasan Rizvi hasan@hawk.iit.edu
+
 Ekrem Guzelyel eguzelyel@hawk.iit.edu
 
 
 ### References
 Hui, J. Memory Network. J​onathan hui blog.​Retrieved from jhui.github.io/2017/03/15/Memory-network/
+
 Jason Weston, Antoine Bordes, Sumit Chopra, Alexander M. Rush, Bart van Merriënboer, Armand Joulin and Tomas Mikolov. ​Towards AI Complete Question Answering: A Set of Prerequisite Toy Tasks,​ arXiv​:1502.05698.
+
 Sainbayar Sukhbaatar, Jason Weston, Rob Fergus, et al. 2015. End-to-end memory networks. In Advances in neural information processing systems, pages 2440–2448.
+
 Weng, L. Attention? Attention! L​il-log​. Retrieved from lilianweng.github.io/lil-log​/2018/06/24/a​ ttention-attention.html
+
 Weston, Jason, Chopra, Sumit, and Bordes, Antoine. Memory networks. CoRR​, abs/1410.3916, 2014.
 
